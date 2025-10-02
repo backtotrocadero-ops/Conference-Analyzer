@@ -4,9 +4,10 @@ import io
 import openai
 import json
 import re
+import time
 
 st.set_page_config(page_title="Company Info Auto-Fill", layout="wide")
-st.title("🏢 Company Info Auto-Fill")
+st.title("🏢 Company Info Auto-Fill (Method B)")
 
 st.markdown(
     "Upload a CSV or TXT file containing a list of company names (one per line). "
@@ -32,11 +33,15 @@ def get_company_info(company_name):
             "Main Products": "",
             "Key Clients": ""
         }
+
     openai.api_key = st.secrets["OPENAI_API_KEY"]
+
+    # Prompt 구체화: 산업/국가를 넣으면 더 좋음 (여기서는 생략 가능)
     prompt = f"""
-    Provide the following information for the company "{company_name}" in English. 
-    If any information is unknown, leave it blank.
-    Respond strictly in JSON format:
+    Provide available information for the company "{company_name}" in English.
+    Fill in these fields: Founded, Employees, Revenue, Main Products, Key Clients.
+    If unknown, leave blank.
+    Respond strictly in JSON format, example:
 
     {{
         "Company": "{company_name}",
@@ -47,19 +52,28 @@ def get_company_info(company_name):
         "Key Clients": "..."
     }}
     """
+
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role":"user","content":prompt}],
-            max_tokens=250,
-            temperature=0.2
+            max_tokens=400,
+            temperature=0
         )
+
         content = response['choices'][0]['message']['content']
 
-        # 간단한 JSON 파싱
+        # JSON 파싱 시 오류 방지
         content = re.sub(r"(\w+):", r'"\1":', content)
         content = content.replace("'", '"')
-        return json.loads(content)
+        data = json.loads(content)
+
+        # 필드 없으면 공란
+        for key in ["Company","Founded","Employees","Revenue","Main Products","Key Clients"]:
+            if key not in data:
+                data[key] = ""
+
+        return data
     except:
         return {
             "Company": company_name,
@@ -86,10 +100,11 @@ if uploaded_file:
         st.write(f"Processing {i+1}/{len(company_list)}: {company}")
         info = get_company_info(company)
         results.append(info)
-    
+        time.sleep(1)  # OpenAI API Rate Limit 대비
+
     df_result = pd.DataFrame(results)
     st.success("✅ Company info retrieval completed!")
-    
+
     st.dataframe(df_result, use_container_width=True)
 
     # Excel download
