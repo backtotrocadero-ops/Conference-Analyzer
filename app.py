@@ -1,19 +1,11 @@
-# app.py
 import streamlit as st
-import io, re, pandas as pd
+import io, re
+import pandas as pd
 
-# --- OCR 및 PDF 처리 ---
 try:
     import fitz  # PyMuPDF
 except:
     fitz = None
-
-try:
-    from pdf2image import convert_from_bytes
-    import pytesseract
-except:
-    convert_from_bytes = None
-    pytesseract = None
 
 # 언어 감지
 try:
@@ -39,12 +31,10 @@ def simple_summary(text, max_words=25):
     words = re.split(r'\s+', text.strip())
     return " ".join(words[:max_words]) + ("..." if len(words) > max_words else "")
 
-# --- PDF 텍스트 추출 ---
+# PDF 텍스트 추출 (텍스트 PDF 전용)
 def extract_text_from_pdf(uploaded_file):
     data = uploaded_file.read()
     text = ""
-
-    # 1. PyMuPDF 시도
     if fitz:
         try:
             doc = fitz.open(stream=data, filetype="pdf")
@@ -52,23 +42,9 @@ def extract_text_from_pdf(uploaded_file):
                 text += page.get_text("text") + "\n\n"
         except:
             text = ""
-
-    # 2. 텍스트 부족시 ASCII 필터링
-    if len(text.strip()) < 20:
-        text = ''.join(chr(c) if 32 <= c <= 126 else ' ' for c in data)
-
-    # 3. pytesseract OCR 시도 (이미지 PDF)
-    if len(text.strip()) < 50 and convert_from_bytes and pytesseract:
-        try:
-            images = convert_from_bytes(data)
-            for img in images:
-                text += pytesseract.image_to_string(img, lang='eng+kor') + "\n\n"
-        except:
-            pass
-
     return text
 
-# --- 세션 분석 ---
+# 세션 분석
 def find_time_in_block(block):
     m = re.search(r'(\b\d{1,2}[:.]\d{2}\b\s*[-–—~]\s*\b\d{1,2}[:.]\d{2}\b)', block)
     if m: return m.group(1)
@@ -126,7 +102,7 @@ if uploaded_file:
     st.info("PDF 분석 중... 잠시만 기다려 주세요.")
     text = extract_text_from_pdf(uploaded_file)
     if not text.strip():
-        st.error("PDF에서 텍스트를 추출하지 못했습니다. (이미지 PDF일 경우 OCR 실패)")
+        st.error("PDF에서 텍스트를 추출하지 못했습니다.")
     else:
         sessions = parse_sessions_from_text(text)
         st.success(f"총 {len(sessions)}개 세션 감지됨")
