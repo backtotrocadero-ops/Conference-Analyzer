@@ -39,37 +39,45 @@ def extract_text_from_pdf(uploaded_file):
         try:
             doc = fitz.open(stream=data, filetype="pdf")
             for page in doc:
-                blocks = page.get_text("blocks")  # 블록 단위 추출
+                blocks = page.get_text("blocks")
                 for b in blocks:
                     text += b[4].strip() + "\n"
         except:
             text = ""
     return text
 
-# 세션 분석 (시간 / 장소 / 제목+주제 구조 반영)
+# 세션 분석 (사용자 정의 규칙 적용)
 def parse_sessions_from_text(text):
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     sessions = []
 
     for line in lines:
-        # 기본적으로 "시간 / 장소 / 제목 및 주제" 구조라고 가정
-        # 탭이나 연속 공백으로 구분
-        parts = re.split(r'\s{2,}|\t', line)  # 2칸 이상 공백 OR 탭
-        if len(parts) < 2:
-            continue  # 최소 2개 이상 요소 필요 (시간 + 제목)
-        time = parts[0]
-        place = parts[1] if len(parts) > 2 else ""
-        title_subject = " ".join(parts[2:]) if len(parts) > 2 else parts[1]
+        time = ""
+        place = ""
+        title = ""
 
-        lang = detect_lang(title_subject)
+        # 1) 숫자로 시작하면 시간
+        if re.match(r'^\d{1,2}[:.]\d{2}', line):
+            time = line
+            continue  # 시간만 있는 줄은 다음 줄에서 제목/장소 찾기
 
-        sessions.append({
-            "time": time,
-            "place": place,
-            "title": title_subject,
-            "text": title_subject,
-            "lang": lang
-        })
+        # 2) 장소 키워드
+        if any(k.lower() in line.lower() for k in ['omega', 'lambda', 'hall']):
+            place = line
+
+        # 3) 대문자로 시작하면 제목
+        if re.match(r'^[A-Z][A-Za-z\s,&\-:]*', line):
+            title = line
+
+        # 최소 한 개라도 채워졌으면 세션 추가
+        if time or place or title:
+            sessions.append({
+                "time": time,
+                "place": place,
+                "title": title,
+                "text": title,
+                "lang": detect_lang(title if title else line)
+            })
     return sessions
 
 def summarize_with_openai(text):
