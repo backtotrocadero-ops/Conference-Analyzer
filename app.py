@@ -1,11 +1,25 @@
+# app.py
 import streamlit as st
-import io, re
+import re, io
 import pandas as pd
 
+# PDF 텍스트 추출: PyMuPDF
 try:
     import fitz  # PyMuPDF
-except:
-    fitz = None
+    def extract_text_from_pdf(uploaded_file):
+        data = uploaded_file.read()
+        doc = fitz.open(stream=data, filetype="pdf")
+        text = ""
+        for page in doc:
+            text += page.get_text("text") + "\n\n"
+        return text
+except Exception:
+    # fallback
+    def extract_text_from_pdf(uploaded_file):
+        try:
+            return uploaded_file.getvalue().decode("utf-8", errors="ignore")
+        except:
+            return ""
 
 # 언어 감지
 try:
@@ -16,38 +30,25 @@ try:
             return detect(s)
         except:
             return "en"
-except:
+except Exception:
     def detect_lang(s):
         return "en"
 
-# OpenAI 요약
+# OpenAI (선택)
 try:
     import openai
     openai_available = True
-except:
+except Exception:
     openai_available = False
 
 def simple_summary(text, max_words=25):
     words = re.split(r'\s+', text.strip())
     return " ".join(words[:max_words]) + ("..." if len(words) > max_words else "")
 
-# PDF 텍스트 추출 (텍스트 PDF 전용)
-def extract_text_from_pdf(uploaded_file):
-    data = uploaded_file.read()
-    text = ""
-    if fitz:
-        try:
-            doc = fitz.open(stream=data, filetype="pdf")
-            for page in doc:
-                text += page.get_text("text") + "\n\n"
-        except:
-            text = ""
-    return text
-
-# 세션 분석
 def find_time_in_block(block):
     m = re.search(r'(\b\d{1,2}[:.]\d{2}\b\s*[-–—~]\s*\b\d{1,2}[:.]\d{2}\b)', block)
-    if m: return m.group(1)
+    if m:
+        return m.group(1)
     m2 = re.search(r'(\b\d{1,2}[:.]\d{2}\b)', block)
     return m2.group(1) if m2 else ""
 
@@ -56,12 +57,13 @@ def parse_sessions_from_text(text):
     sessions = []
     for b in blocks:
         b = b.strip()
-        if len(b) < 10: continue
+        if len(b) < 10:
+            continue
         lines = [ln.strip() for ln in b.splitlines() if ln.strip()]
-        title = lines[0] if lines else b[:60]+"..."
+        title = lines[0] if lines else (b[:60] + "...")
         time = find_time_in_block(b)
         lang = detect_lang(b[:300]) if b else "en"
-        snippet = b.replace("\n"," ")[:600]
+        snippet = b.replace("\n", " ")[:600]
         sessions.append({
             "time": time,
             "title": title,
@@ -77,7 +79,11 @@ def summarize_with_openai(text):
         return simple_summary(text)
     try:
         openai.api_key = st.secrets["OPENAI_API_KEY"]
-        prompt = f"You are a concise assistant. Summarize this in 1 line:\n{text}"
+        prompt = (
+            "You are a concise assistant. Given a conference session title and description, "
+            "return a single 1-line summary (core idea). Keep it short."
+            "\n\nCONTENT:\n" + text
+        )
         resp = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role":"user","content":prompt}],
@@ -85,36 +91,46 @@ def summarize_with_openai(text):
             temperature=0.2,
         )
         return resp['choices'][0]['message']['content'].strip()
-    except:
+    except Exception as e:
         return simple_summary(text)
 
-# --- Streamlit UI ---
 st.set_page_config(page_title="Conference PDF Analyzer", layout="wide")
-st.title("🗂️ Conference PDF Analyzer")
+st.title("🗂️ Conference PDF Analyzer (브라우저만으로 동작)")
 
-st.markdown("**사용법**: PDF 업로드 → 관심 키워드 확인 → 분석 시작")
+st.markdown("**사용법**: PDF 파일 업로드 → 관심 키워드 확인 → `분석 시작` 클릭")
 
 uploaded_file = st.file_uploader("PDF 파일 업로드", type=["pdf"])
 keywords_input = st.text_input("관심 키워드 (쉼표로 구분)", value="ammunition, defense, NATO, 탄약, 국방")
-use_openai = st.checkbox("OpenAI로 요약 사용 (선택, Streamlit Secrets에 API_KEY 필요)", value=False)
+use_openai = st.checkbox("OpenAI로 요약 사용 (선택, 더 나은 요약). Streamlit Secrets에 OPENAI_API_KEY 필요", value=False)
 
 if uploaded_file:
-    st.info("PDF 분석 중... 잠시만 기다려 주세요.")
+    st.info("PDF에서 텍스트를 추출 중입니다... 잠시만 기다려 주세요.")
     text = extract_text_from_pdf(uploaded_file)
     if not text.strip():
-        st.error("PDF에서 텍스트를 추출하지 못했습니다.")
+        st.error("PDF에서 텍스트를 추출하지 못했습니다. (스캔 이미지형 PDF일 수 있습니다.)")
     else:
         sessions = parse_sessions_from_text(text)
-        st.success(f"총 {len(sessions)}개 세션 감지됨")
+        st.success(f"총 {len(sessions)}개의 세션/블록이 감지되었습니다.")
+        # 키워드 리스트
         keywords = [k.strip().lower() for k in keywords_input.split(",") if k.strip()]
         rows = []
         for s in sessions:
-            summary = summarize_with_openai(s['title'] + "\n" + s['text']) if (use_openai and openai_available) else simple_summary(s['title'])
+            # 요약
+            summary = summarize_with_openai(s['title'] + "\n\n" + s['text']) if (use_openai and openai_available) else simple_summary(s['title'])
+            # 언어 표시
             lang_label = "EN" if s['lang'].startswith("en") else "⚠ Not English"
-            score = sum(1 for kw in keywords if kw in (s['title'] + " " + s['text']).lower())
-            if score >= 2: priority = "⭐⭐⭐ (강력추천)"
-            elif score == 1: priority = "⭐⭐ (추천)"
-            else: priority = "⭐ (참고)"
+            # 우선순위: 키워드 출현 횟수 기반 간단 점수
+            score = 0
+            lowtext = (s['title'] + " " + s['text']).lower()
+            for kw in keywords:
+                if kw and kw in lowtext:
+                    score += 1
+            if score >= 2:
+                priority = "⭐⭐⭐ (강력추천)"
+            elif score == 1:
+                priority = "⭐⭐ (추천)"
+            else:
+                priority = "⭐ (참고)"
             rows.append({
                 "시간": s['time'],
                 "제목": s['title'],
@@ -125,12 +141,13 @@ if uploaded_file:
         df = pd.DataFrame(rows)
         st.dataframe(df, use_container_width=True)
 
-        # Excel 다운로드
+        # 다운로드 (Excel)
         towrite = io.BytesIO()
         df.to_excel(towrite, index=False, sheet_name="recommendations")
         towrite.seek(0)
         st.download_button("📥 Excel로 다운로드", data=towrite, file_name="conference_recommendations.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+        # 화면 출력
         st.markdown("----")
         st.subheader("상세 리스트")
         for i, r in df.iterrows():
