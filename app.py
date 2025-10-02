@@ -2,19 +2,26 @@ import streamlit as st
 import pandas as pd
 import io
 import openai
+import json
+import re
 
-st.set_page_config(page_title="Company Info Analyzer", layout="wide")
-st.title("🏢 Company Info Analyzer")
+st.set_page_config(page_title="Company Info Auto-Fill", layout="wide")
+st.title("🏢 Company Info Auto-Fill")
 
-st.markdown("Upload a CSV or TXT file containing a list of company names, one per line.")
+st.markdown(
+    "Upload a CSV or TXT file containing a list of company names (one per line). "
+    "ChatGPT will try to fill in the information automatically. Unknown data will be left blank."
+)
 
-# 파일 업로드
+# File upload
 uploaded_file = st.file_uploader("Upload company list", type=["csv", "txt"])
 
-# OpenAI 요약 옵션
-use_openai = st.checkbox("Use OpenAI for info summary (API key required in Streamlit Secrets)", value=True)
+# OpenAI checkbox
+use_openai = st.checkbox(
+    "Use OpenAI API to auto-fill info (API key required in Streamlit Secrets)", value=True
+)
 
-# 함수: OpenAI로 회사 정보 조회
+# Function to get company info via OpenAI
 def get_company_info(company_name):
     if not use_openai or not st.secrets.get("OPENAI_API_KEY"):
         return {
@@ -28,7 +35,9 @@ def get_company_info(company_name):
     openai.api_key = st.secrets["OPENAI_API_KEY"]
     prompt = f"""
     Provide the following information for the company "{company_name}" in English. 
-    Respond in JSON format:
+    If any information is unknown, leave it blank.
+    Respond strictly in JSON format:
+
     {{
         "Company": "{company_name}",
         "Founded": "...",
@@ -37,7 +46,6 @@ def get_company_info(company_name):
         "Main Products": "...",
         "Key Clients": "..."
     }}
-    Only use official/public sources.
     """
     try:
         response = openai.ChatCompletion.create(
@@ -47,9 +55,10 @@ def get_company_info(company_name):
             temperature=0.2
         )
         content = response['choices'][0]['message']['content']
-        # JSON-like parsing
-        import json, re
-        content = re.sub(r"(\w+):", r'"\1":', content)  # 간단 치환
+
+        # 간단한 JSON 파싱
+        content = re.sub(r"(\w+):", r'"\1":', content)
+        content = content.replace("'", '"')
         return json.loads(content)
     except:
         return {
@@ -61,18 +70,17 @@ def get_company_info(company_name):
             "Key Clients": ""
         }
 
-# 메인 처리
+# Main processing
 if uploaded_file:
-    # 회사명 리스트 불러오기
+    # Load company list
     if uploaded_file.type == "text/plain":
         company_list = [line.strip() for line in uploaded_file.read().decode("utf-8").splitlines() if line.strip()]
     else:
         df_in = pd.read_csv(uploaded_file)
-        # CSV가 한 컬럼만 있는 경우
         company_list = df_in.iloc[:,0].dropna().astype(str).tolist()
     
-    st.info(f"{len(company_list)} companies loaded. Retrieving info... This may take some time.")
-    
+    st.info(f"{len(company_list)} companies loaded. Retrieving info (this may take a while)...")
+
     results = []
     for i, company in enumerate(company_list):
         st.write(f"Processing {i+1}/{len(company_list)}: {company}")
@@ -83,9 +91,14 @@ if uploaded_file:
     st.success("✅ Company info retrieval completed!")
     
     st.dataframe(df_result, use_container_width=True)
-    
-    # Excel 다운로드
+
+    # Excel download
     towrite = io.BytesIO()
     df_result.to_excel(towrite, index=False, sheet_name="Company Info")
     towrite.seek(0)
-    st.download_button("📥 Download Excel", data=towrite, file_name="company_info.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        "📥 Download Excel",
+        data=towrite,
+        file_name="company_info.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
