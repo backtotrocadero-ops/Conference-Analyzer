@@ -1,8 +1,7 @@
 streamlit
 pandas
 PyMuPDF
-langdetect
-openai
-openpyxl
 pytesseract
 pdf2image
+langdetect
+openai
