@@ -1,23 +1,30 @@
 import streamlit as st
-import io, re
+import io, re, os
 import pandas as pd
+from PIL import Image
 
 try:
     import fitz  # PyMuPDF
 except:
     fitz = None
 
-# 언어 감지
 try:
-    from langdetect import detect, DetectorFactory
-    DetectorFactory.seed = 0
-    def detect_lang(s):
-        try:
-            return detect(s)
-        except:
-            return "en"
+    import pytesseract
 except:
-    def detect_lang(s):
+    pytesseract = None
+
+try:
+    from pdf2image import convert_from_bytes
+except:
+    convert_from_bytes = None
+
+# 언어 감지
+from langdetect import detect, DetectorFactory
+DetectorFactory.seed = 0
+def detect_lang(s):
+    try:
+        return detect(s)
+    except:
         return "en"
 
 # OpenAI 요약
@@ -30,70 +37,6 @@ except:
 def simple_summary(text, max_words=25):
     words = re.split(r'\s+', text.strip())
     return " ".join(words[:max_words]) + ("..." if len(words) > max_words else "")
-
-# PDF 텍스트 추출
-def extract_text_from_pdf(uploaded_file):
-    data = uploaded_file.read()
-    text = ""
-    if fitz:
-        try:
-            doc = fitz.open(stream=data, filetype="pdf")
-            for page in doc:
-                blocks = page.get_text("blocks")
-                for b in blocks:
-                    text += b[4].strip() + "\n"
-        except:
-            text = ""
-    return text
-
-# 세션 분석 (사용자 정의 규칙 적용 + 중복 제거 + 2칸 이상 공백 기준)
-def parse_sessions_from_text(text):
-    # 2칸 이상 공백 기준으로 블록 나누기
-    blocks = re.split(r'\s{2,}', text)
-    sessions = []
-    seen_texts = set()  # 중복 제거용
-
-    current_time = ""
-    current_place = ""
-    
-    for block in blocks:
-        block = block.strip()
-        if not block:
-            continue
-        # 중복 제거
-        if block in seen_texts:
-            continue
-        seen_texts.add(block)
-
-        time = ""
-        place = ""
-        title = ""
-
-        # 1) 숫자로 시작하면 시간
-        if re.match(r'^\d{1,2}[:.]\d{2}', block):
-            current_time = block
-            continue  # 시간만 있으면 다음 블록에서 제목/장소 처리
-
-        # 2) 장소 키워드
-        if any(k.lower() in block.lower() for k in ['omega', 'lambda', 'hall']):
-            current_place = block
-
-        # 3) 대문자로 시작하면 제목
-        if re.match(r'^[A-Z][A-Za-z\s,&\-:]*', block):
-            title = block
-
-        # 최소 한 개라도 있으면 세션 추가
-        if title or current_time or current_place:
-            sessions.append({
-                "time": current_time,
-                "place": current_place,
-                "title": title,
-                "text": title if title else block,
-                "lang": detect_lang(title if title else block)
-            })
-            # 제목이 추가되었으면 다음 블록에서는 새로 제목/장소 찾기
-            title = ""
-    return sessions
 
 def summarize_with_openai(text):
     if not openai_available or not st.secrets.get("OPENAI_API_KEY"):
@@ -111,9 +54,86 @@ def summarize_with_openai(text):
     except:
         return simple_summary(text)
 
+# --- PDF 텍스트 추출 (텍스트 PDF + 이미지 PDF)
+def extract_text_from_pdf(uploaded_file):
+    data = uploaded_file.read()
+    text_blocks = []
+    
+    # 1) 텍스트 PDF
+    if fitz:
+        try:
+            doc = fitz.open(stream=data, filetype="pdf")
+            for page in doc:
+                blocks = page.get_text("blocks")
+                for b in blocks:
+                    block_text = b[4].strip()
+                    if block_text:
+                        text_blocks.append(block_text)
+        except:
+            pass
+    
+    # 2) 이미지 PDF
+    if pytesseract and convert_from_bytes:
+        try:
+            images = convert_from_bytes(data)
+            for img in images:
+                text = pytesseract.image_to_string(img, lang='eng')
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line:
+                        text_blocks.append(line)
+        except:
+            pass
+    
+    return "\n".join(text_blocks)
+
+# --- 세션 분석 (레이아웃+블록 기반)
+def parse_sessions_from_text(text):
+    # 2칸 이상 공백 기준으로 블록 나누기
+    blocks = re.split(r'\s{2,}', text)
+    sessions = []
+    seen_texts = set()  # 중복 제거
+    current_time = ""
+    current_place = ""
+    
+    for block in blocks:
+        block = block.strip()
+        if not block or block in seen_texts:
+            continue
+        seen_texts.add(block)
+        
+        time = ""
+        place = ""
+        title = ""
+        
+        # 숫자로 시작 → 시간
+        if re.match(r'^\d{1,2}[:.]\d{2}', block):
+            current_time = block
+            continue
+        
+        # 장소 키워드
+        if any(k.lower() in block.lower() for k in ['omega', 'lambda', 'hall']):
+            current_place = block
+        
+        # 대문자로 시작 → 제목
+        if re.match(r'^[A-Z][A-Za-z\s,&\-:]*', block):
+            title = block
+        
+        if current_time or current_place or title:
+            sessions.append({
+                "time": current_time,
+                "place": current_place,
+                "title": title,
+                "text": title if title else block,
+                "lang": detect_lang(title if title else block)
+            })
+            title = ""
+    
+    return sessions
+
 # --- Streamlit UI ---
 st.set_page_config(page_title="Conference PDF Analyzer", layout="wide")
-st.title("🗂️ Conference PDF Analyzer")
+st.title("🗂️ Conference PDF Analyzer (OCR + AI)")
 
 st.markdown("**사용법**: PDF 업로드 → 관심 키워드 확인 → 분석 시작")
 
