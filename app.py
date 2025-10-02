@@ -46,38 +46,53 @@ def extract_text_from_pdf(uploaded_file):
             text = ""
     return text
 
-# 세션 분석 (사용자 정의 규칙 적용)
+# 세션 분석 (사용자 정의 규칙 적용 + 중복 제거 + 2칸 이상 공백 기준)
 def parse_sessions_from_text(text):
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    # 2칸 이상 공백 기준으로 블록 나누기
+    blocks = re.split(r'\s{2,}', text)
     sessions = []
+    seen_texts = set()  # 중복 제거용
 
-    for line in lines:
+    current_time = ""
+    current_place = ""
+    
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        # 중복 제거
+        if block in seen_texts:
+            continue
+        seen_texts.add(block)
+
         time = ""
         place = ""
         title = ""
 
         # 1) 숫자로 시작하면 시간
-        if re.match(r'^\d{1,2}[:.]\d{2}', line):
-            time = line
-            continue  # 시간만 있는 줄은 다음 줄에서 제목/장소 찾기
+        if re.match(r'^\d{1,2}[:.]\d{2}', block):
+            current_time = block
+            continue  # 시간만 있으면 다음 블록에서 제목/장소 처리
 
         # 2) 장소 키워드
-        if any(k.lower() in line.lower() for k in ['omega', 'lambda', 'hall']):
-            place = line
+        if any(k.lower() in block.lower() for k in ['omega', 'lambda', 'hall']):
+            current_place = block
 
         # 3) 대문자로 시작하면 제목
-        if re.match(r'^[A-Z][A-Za-z\s,&\-:]*', line):
-            title = line
+        if re.match(r'^[A-Z][A-Za-z\s,&\-:]*', block):
+            title = block
 
-        # 최소 한 개라도 채워졌으면 세션 추가
-        if time or place or title:
+        # 최소 한 개라도 있으면 세션 추가
+        if title or current_time or current_place:
             sessions.append({
-                "time": time,
-                "place": place,
+                "time": current_time,
+                "place": current_place,
                 "title": title,
-                "text": title,
-                "lang": detect_lang(title if title else line)
+                "text": title if title else block,
+                "lang": detect_lang(title if title else block)
             })
+            # 제목이 추가되었으면 다음 블록에서는 새로 제목/장소 찾기
+            title = ""
     return sessions
 
 def summarize_with_openai(text):
